@@ -1,3 +1,6 @@
+use hex::FromHex;
+use std::iter::repeat;
+use std::str;
 use std::fs::File;
 use std::io::prelude::*;
 use std::collections::BTreeMap;
@@ -25,6 +28,25 @@ fn read_file(fname: &str) -> std::io::Result<Vec<u8>> {
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
     Ok(contents.into_bytes())
+}
+
+fn xor(x1: &[u8], x2: &[u8]) -> Vec<u8> {
+    assert!(x1.len() <= x2.len());
+    let mut out = vec![0; x1.len()];
+    for x in 0..x1.len() {
+        out[x] = x1[x] ^ x2[x];
+    }
+    return out;
+}
+
+fn score(string: &str) -> i32 {
+    let rated = "ETAOINSHRDLCUMWFGYPBVKJXQZ";
+    let mut score: i32 = 0;
+    for (i, c) in rated.split("").enumerate() {
+        let rate = (26 - i as i32) * string.to_uppercase().matches(c).count() as i32;
+        score += rate;
+    }
+    return score;
 }
 
 fn main() -> std::io::Result<()> {
@@ -61,7 +83,7 @@ fn main() -> std::io::Result<()> {
     }
     println!("keysizes: {:?}", keysizes);
 
-    // 5: use 3 smallest keysize values
+    // 4: use 3 smallest keysize values
     let num_candidates = 3;
     let mut candidates = vec![0; num_candidates];
     let mut iter = keysizes.iter();
@@ -71,5 +93,95 @@ fn main() -> std::io::Result<()> {
         candidates[i] = vector[0];
     }
     println!("picked {} candidates: {:?}", num_candidates, candidates);
+
+    for keysize in candidates {
+        println!("trying candidate {}", keysize);
+        // 5: break cipher in blocks of KEYSIZE length
+        let num_blocks = (cipher.len() as f64/keysize as f64).ceil() as usize;
+        let mut blocks = vec![vec![0; keysize]; num_blocks];
+        for i in 0..cipher.len() {
+            let j = i % keysize;
+            let blockno = i / keysize;
+            blocks[blockno][j] = cipher[i];
+        }
+        println!("{} blocks of len {}", blocks.len(), keysize);
+        //println!("blocks: {:?}", blocks);
+
+        // 6: transpose blocks
+        let mut transposed = vec![vec![0; num_blocks]; keysize];
+        for i in 0..cipher.len() {
+            let blockno = i / keysize;
+            let j = i % keysize;
+            transposed[j][blockno] = blocks[blockno][j];
+        }
+        //println!("transposed: {:?}", transposed);
+        // 7: solve each transposed block as if it was single-character XOR
+        let mut possible_key = vec![0; keysize];
+        for (i, block) in transposed.iter().enumerate() {
+            let mut max_score = 0;
+            let mut result_str = String::new();
+            let mut best_candidate = 0;
+            for candidate in 0..255 {
+                let key: Vec<u8> = vec![candidate; block.len()];
+                let decrypt = xor(&block, &key);
+                let secret = str::from_utf8(&decrypt);
+                if secret.is_ok() {
+                    let score = score(secret.unwrap());
+                    //println!("score for key {}: {}", candidate, score);
+                    if score > max_score {
+                        max_score = score;
+                        result_str = secret.unwrap().to_string();
+                        best_candidate = candidate;
+                    }
+                } else {
+                    //println!("nok: {}", candidate);
+                }
+            }
+            //println!("{}: {}", result_str, max_score);
+            //println!("best candidate: {}", best_candidate);
+            possible_key[i] = best_candidate;
+        }
+        println!("possible key: {:?}", possible_key);
+        let key = repeat(possible_key).take(num_blocks).flatten().collect::<Vec<u8>>();
+        let secret = xor(&cipher, &key);
+        let secret_str = str::from_utf8(&secret);
+        if secret_str.is_ok() {
+            println!("possible result: {}", secret_str.unwrap().to_string());
+        } else {
+            println!("nok");
+        }
+    }
+
     Ok(())
+}
+
+pub fn split<T>(slice: &[T], n: usize) -> impl Iterator<Item = &[T]> {
+    let len = slice.len() / n;
+    let rem = slice.len() % n;
+    Split { slice, len, rem }
+}
+
+#[derive(Debug)]
+struct Split<'a, T> {
+    slice: &'a [T],
+    len: usize,
+    rem: usize,
+}
+
+impl<'a, T> Iterator for Split<'a, T> {
+    type Item = &'a [T];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.slice.is_empty() {
+            return None;
+        }
+        let mut len = self.len;
+        if self.rem > 0 {
+            len += 1;
+            self.rem -= 1;
+        }
+        let (chunk, rest) = self.slice.split_at(len);
+        self.slice = rest;
+        Some(chunk)
+    }
 }
